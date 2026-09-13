@@ -4,18 +4,18 @@ import com.example.addon.AddonTemplate;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.misc.Keybind;
-import meteordevelopment.meteorclient.utils.player.PlayerUtils;
 import meteordevelopment.orbit.EventHandler;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.SwordItem;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.*;
@@ -28,10 +28,6 @@ import java.util.stream.Collectors;
  * Baritone), li attacca (multi-target, boost di velocità con la spada), e
  * vende automaticamente nella GUI "/shop Mobs" quando l'inventario è pieno
  * o su richiesta manuale.
- *
- * NOTA: non richiede Baritone come dipendenza. Se in futuro vuoi un
- * pathfinding più intelligente (che scavalca ostacoli, ecc.) va aggiunta
- * la dipendenza Baritone al build.gradle e si può reintrodurre.
  */
 public class MobAutoFarm extends Module {
 
@@ -118,6 +114,7 @@ public class MobAutoFarm extends Module {
     private boolean sellingInProgress = false;
     private boolean manualSellRequested = false;
     private boolean movingToTarget = false;
+    private boolean lastManualSellKeyState = false;
 
     public MobAutoFarm() {
         super(null, "mob-auto-farm", "Farm mob con movimento e vendita automatica nella GUI dello shop.");
@@ -129,6 +126,7 @@ public class MobAutoFarm extends Module {
         sellingInProgress = false;
         manualSellRequested = false;
         movingToTarget = false;
+        lastManualSellKeyState = false;
     }
 
     @Override
@@ -140,9 +138,16 @@ public class MobAutoFarm extends Module {
     private void onTick(TickEvent.Pre event) {
         if (mc.player == null || mc.world == null) return;
 
-        if (manualSellKeybind.get().wasPressed()) {
+        // Edge-detection manuale: il tipo Keybind di Meteor espone solo lo
+        // stato "premuto ora" (isPressed), non un "è appena stato premuto"
+        // come le KeyBinding vanilla. Lo ricostruiamo confrontando col tick
+        // precedente, così un tasto tenuto premuto non richiede vendita ad
+        // ogni singolo tick.
+        boolean keyPressedNow = manualSellKeybind.get().isPressed();
+        if (keyPressedNow && !lastManualSellKeyState) {
             manualSellRequested = true;
         }
+        lastManualSellKeyState = keyPressedNow;
 
         // 1) Vendita in corso
         if (sellingInProgress) {
@@ -181,6 +186,7 @@ public class MobAutoFarm extends Module {
         boolean inRange = isInAttackRange(nearest);
 
         if (!inRange && moveToTarget.get()) {
+            lookAt(nearest);
             moveTowards(nearest.getPos());
             applySpeedBoost(holdingSword);
             return; // aspetta di arrivare a portata prima di attaccare
@@ -198,7 +204,7 @@ public class MobAutoFarm extends Module {
             if (attacked >= maxTargets.get()) break;
             if (!isInAttackRange(target)) continue;
 
-            PlayerUtils.faceEntityClient(target);
+            lookAt(target);
             mc.interactionManager.attackEntity(mc.player, target);
             mc.player.swingHand(Hand.MAIN_HAND);
             attacked++;
@@ -208,17 +214,28 @@ public class MobAutoFarm extends Module {
     }
 
     /**
-     * Movimento manuale verso un punto: ruota il giocatore verso il bersaglio
-     * e tiene premuto "avanti". Semplice ed efficace per farm in aree aperte,
-     * ma non evita ostacoli/buche come farebbe un vero pathfinder (Baritone).
+     * Ruota il giocatore verso il centro/occhi di un'entità. Calcolato a mano
+     * invece di affidarsi a un metodo di utilità specifico (che può non
+     * esistere o avere firma diversa a seconda della versione di Meteor).
      */
+    private void lookAt(Entity target) {
+        Vec3d eyePos = mc.player.getEyePos();
+        Vec3d targetPos = target.getBoundingBox().getCenter();
+
+        double dx = targetPos.x - eyePos.x;
+        double dy = targetPos.y - eyePos.y;
+        double dz = targetPos.z - eyePos.z;
+        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+
+        float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx))) - 90.0f;
+        float pitch = (float) -(Math.toDegrees(Math.atan2(dy, horizontalDist)));
+
+        mc.player.setYaw(MathHelper.wrapDegrees(yaw));
+        mc.player.setPitch(MathHelper.clamp(pitch, -90.0f, 90.0f));
+    }
+
     private void moveTowards(Vec3d targetPos) {
-        double dx = targetPos.x - mc.player.getX();
-        double dz = targetPos.z - mc.player.getZ();
-
-        float yaw = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
-        mc.player.setYaw(yaw);
-
+        // La rotazione è già impostata da lookAt(): qui basta camminare avanti.
         mc.options.forwardKey.setPressed(true);
         movingToTarget = true;
     }
