@@ -7,6 +7,7 @@ import com.example.addon.modules.AutoSheepFarm;
 import com.example.addon.modules.SheepEsp;
 import com.example.addon.modules.ShopTracker;
 import com.example.addon.modules.TpsGuard;
+import com.example.addon.modules.AutoFireworkModule;
 import com.mojang.logging.LogUtils;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
@@ -31,6 +32,7 @@ public class AddonTemplate extends MeteorAddon {
         Modules.get().add(new AutoSheepFarm());
         Modules.get().add(new ShopTracker());
         Modules.get().add(new TpsGuard());
+        Modules.get().add(new AutoFireworkModule());
 
         // Commands
         Commands.add(new CommandExample());
