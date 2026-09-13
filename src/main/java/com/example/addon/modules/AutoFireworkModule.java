@@ -1,6 +1,6 @@
 package com.example.addon.modules; // TODO: sostituisci con il package del tuo addon
 
-import com.example.addon.AddonTemplate
+import com.example.addon.AddonTemplate;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Categories;
