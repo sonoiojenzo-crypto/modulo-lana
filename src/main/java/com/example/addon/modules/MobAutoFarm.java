@@ -1,11 +1,9 @@
 package com.example.addon.modules;
 
 import com.example.addon.AddonTemplate;
-import baritone.api.BaritoneAPI;
-import baritone.api.IBaritone;
-import baritone.api.pathing.goals.GoalNear;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.utils.misc.Keybind;
 import meteordevelopment.meteorclient.utils.player.PlayerUtils;
 import meteordevelopment.orbit.EventHandler;
 import meteordevelopment.meteorclient.events.world.TickEvent;
@@ -18,6 +16,7 @@ import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Vec3d;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -25,13 +24,14 @@ import java.util.stream.Collectors;
 /**
  * MobAutoFarm
  *
- * Modulo di farm: si muove verso i mob bersaglio (Baritone), li attacca
- * (multi-target, boost di velocità con la spada), e vende automaticamente
- * nella GUI "/shop Mobs" quando l'inventario è pieno o su richiesta manuale.
+ * Modulo di farm: si muove verso i mob bersaglio (movimento manuale, senza
+ * Baritone), li attacca (multi-target, boost di velocità con la spada), e
+ * vende automaticamente nella GUI "/shop Mobs" quando l'inventario è pieno
+ * o su richiesta manuale.
  *
- * NOTA: alcuni nomi di classi/metodi (specialmente Baritone) possono
- * variare leggermente in base alla build che usi: usa l'autocomplete
- * dell'IDE per correggerli se non compilano subito.
+ * NOTA: non richiede Baritone come dipendenza. Se in futuro vuoi un
+ * pathfinding più intelligente (che scavalca ostacoli, ecc.) va aggiunta
+ * la dipendenza Baritone al build.gradle e si può reintrodurre.
  */
 public class MobAutoFarm extends Module {
 
@@ -75,7 +75,7 @@ public class MobAutoFarm extends Module {
     // --- Movimento verso il mob ---
     private final Setting<Boolean> moveToTarget = sgMovement.add(new BoolSetting.Builder()
         .name("muovi-verso-mob")
-        .description("Usa Baritone per avvicinarsi al mob più vicino prima di attaccare.")
+        .description("Cammina verso il mob più vicino se non è già a portata d'attacco.")
         .defaultValue(true)
         .build()
     );
@@ -117,6 +117,7 @@ public class MobAutoFarm extends Module {
     private int attackCooldownTicks = 0;
     private boolean sellingInProgress = false;
     private boolean manualSellRequested = false;
+    private boolean movingToTarget = false;
 
     public MobAutoFarm() {
         super(null, "mob-auto-farm", "Farm mob con movimento e vendita automatica nella GUI dello shop.");
@@ -127,6 +128,12 @@ public class MobAutoFarm extends Module {
         attackCooldownTicks = 0;
         sellingInProgress = false;
         manualSellRequested = false;
+        movingToTarget = false;
+    }
+
+    @Override
+    public void onDeactivate() {
+        stopMovement();
     }
 
     @EventHandler
@@ -146,6 +153,7 @@ public class MobAutoFarm extends Module {
         // 2) Serve vendere? (pieno o richiesto manualmente)
         if (manualSellRequested || shouldStartSelling()) {
             manualSellRequested = false;
+            stopMovement();
             startSelling();
             return;
         }
@@ -158,19 +166,27 @@ public class MobAutoFarm extends Module {
 
     private void farmTick() {
         List<LivingEntity> targets = findTargets();
-        if (targets.isEmpty()) return;
+        if (targets.isEmpty()) {
+            stopMovement();
+            return;
+        }
 
         LivingEntity nearest = targets.get(0);
         boolean holdingSword = mc.player.getMainHandStack().getItem() instanceof SwordItem;
-        if (requireSword.get() && !holdingSword) return;
+        if (requireSword.get() && !holdingSword) {
+            stopMovement();
+            return;
+        }
 
         boolean inRange = isInAttackRange(nearest);
 
         if (!inRange && moveToTarget.get()) {
-            moveTowards(nearest.getBlockPos());
+            moveTowards(nearest.getPos());
             applySpeedBoost(holdingSword);
             return; // aspetta di arrivare a portata prima di attaccare
         }
+
+        stopMovement();
 
         if (attackCooldownTicks > 0) {
             attackCooldownTicks--;
@@ -191,19 +207,39 @@ public class MobAutoFarm extends Module {
         if (attacked > 0) attackCooldownTicks = 1;
     }
 
-    private void moveTowards(BlockPos pos) {
-        IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-        if (!baritone.getPathingBehavior().isPathing()) {
-            baritone.getCustomGoalProcess().setGoalAndPath(new GoalNear(pos, 2));
+    /**
+     * Movimento manuale verso un punto: ruota il giocatore verso il bersaglio
+     * e tiene premuto "avanti". Semplice ed efficace per farm in aree aperte,
+     * ma non evita ostacoli/buche come farebbe un vero pathfinder (Baritone).
+     */
+    private void moveTowards(Vec3d targetPos) {
+        double dx = targetPos.x - mc.player.getX();
+        double dz = targetPos.z - mc.player.getZ();
+
+        float yaw = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
+        mc.player.setYaw(yaw);
+
+        mc.options.forwardKey.setPressed(true);
+        movingToTarget = true;
+    }
+
+    private void stopMovement() {
+        if (movingToTarget) {
+            mc.options.forwardKey.setPressed(false);
+            movingToTarget = false;
         }
     }
 
     private void applySpeedBoost(boolean holdingSword) {
         if (!holdingSword) return;
         if (!mc.player.isSprinting()) mc.player.setSprinting(true);
-        // Con Baritone attivo per il movimento, "moltiplicatore-velocità" resta
-        // come leva utile solo se in futuro sostituisci Baritone con un
-        // movimento manuale (es. tramite input diretti).
+
+        // Boost "grezzo" lato client: aumenta la velocità orizzontale attuale.
+        // Su server con controlli di movimento severi (Grim, Vulcan, ecc.)
+        // rischi di essere rilevato/bloccato: usalo solo su server permissivi.
+        Vec3d v = mc.player.getVelocity();
+        double mult = speedMultiplier.get();
+        mc.player.setVelocity(v.x * mult, v.y, v.z * mult);
     }
 
     private List<LivingEntity> findTargets() {
